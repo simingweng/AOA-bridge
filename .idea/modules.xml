@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/ListUSBDevices.iml" filepath="$PROJECT_DIR$/ListUSBDevices.iml" />
+      <module fileurl="file://$PROJECT_DIR$/AOA-bridge.iml" filepath="$PROJECT_DIR$/AOA-bridge.iml" />
     </modules>
   </component>
 </project>
