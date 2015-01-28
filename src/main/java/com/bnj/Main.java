@@ -11,18 +11,15 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledFuture;
-import java.util.concurrent.TimeUnit;
+import java.util.Map;
+import java.util.concurrent.*;
 
 public class Main {
 
     private static final short[] ACCESSORY_PIDS = {0x2D00, 0x2D01, 0x2D04, 0x2D05};
     private static ScheduledExecutorService executorService = Executors.newSingleThreadScheduledExecutor();
     private static ScheduledFuture<?> future;
-    private static UsbInterface iface;
-    private static UsbPipe pipe;
+    private static Map<UsbDevice, AccessorySlave> slaves = new ConcurrentHashMap<>();
 
     private static UsbServicesListener usbServicesListener = new UsbServicesAdapter() {
         @Override
@@ -32,8 +29,8 @@ public class Main {
             if (ArrayUtils.contains(ACCESSORY_PIDS, device.getUsbDeviceDescriptor().idProduct())) {
                 try {
                     System.out.println(device.getSerialNumberString() + " is in accessory mode");
-                    startSendingData(device);
-                } catch (UsbException | UnsupportedEncodingException e) {
+                    onNewAccessoryDevice(device);
+                } catch (UsbException | UnsupportedEncodingException | RuntimeException | ClassNotFoundException | IllegalAccessException | NoSuchFieldException e) {
                     e.printStackTrace();
                 }
             } else {
@@ -42,12 +39,13 @@ public class Main {
                 try {
                     device.syncSubmit(irp);
                     short version = ByteBuffer.wrap(irp.getData()).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get();
-                    System.out.println("device supports AOA protocol version " + version);
+
                     if (version == 1 || version == 2) {
+                        System.out.println("found AOA-compliant USB device " + device.getProductString() + " v" + version);
                         triggerAccessoryMode(device);
                     }
-                } catch (UsbException e) {
-                    e.printStackTrace();
+                } catch (UsbException | RuntimeException | UnsupportedEncodingException e) {
+                    System.out.println("ignore non-AOA-compliant USB device");
                 }
             }
         }
@@ -55,18 +53,30 @@ public class Main {
         @Override
         public void usbDeviceDetached(UsbServicesEvent event) {
             super.usbDeviceDetached(event);
-            if (future != null) {
-                future.cancel(true);
-                future = null;
+            try {
+                AccessorySlave slave = slaves.remove(event.getUsbDevice());
+                if (slave != null) {
+                    slave.exit();
+                }
+            } catch (UsbException | RuntimeException e) {
+                e.printStackTrace();
             }
-            pipe = null;
-            iface = null;
         }
     };
 
     public static void main(String[] args) {
         try {
             UsbHostManager.getUsbServices().addUsbServicesListener(usbServicesListener);
+            future = executorService.scheduleAtFixedRate(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        broadcastHeartBeat();
+                    } catch (UsbException e) {
+                        e.printStackTrace();
+                    }
+                }
+            }, 0, 3, TimeUnit.SECONDS);
             Thread.sleep(3 * 1000);
             Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
                 @Override
@@ -76,15 +86,9 @@ public class Main {
                         UsbHostManager.getUsbServices().removeUsbServicesListener(usbServicesListener);
                         if (future != null) {
                             future.cancel(true);
-                            future = null;
                         }
-                        if (pipe != null) {
-                            pipe.close();
-                            pipe = null;
-                        }
-                        if (iface != null) {
-                            iface.release();
-                            iface = null;
+                        for (AccessorySlave slave : slaves.values()) {
+                            slave.exit();
                         }
                     } catch (UsbException e) {
                         e.printStackTrace();
@@ -121,26 +125,18 @@ public class Main {
         device.syncSubmit(irps);
     }
 
-    private static void startSendingData(UsbDevice device) throws UsbException {
-        iface = device.getActiveUsbConfiguration().getUsbInterface((byte) 0);
-        iface.claim();
-        for (Object obj : iface.getUsbEndpoints()) {
-            UsbEndpoint endpoint = (UsbEndpoint) obj;
-            if (endpoint.getDirection() == UsbConst.ENDPOINT_DIRECTION_OUT) {
-                pipe = endpoint.getUsbPipe();
-                pipe.open();
-                future = executorService.scheduleAtFixedRate(new Runnable() {
-                    @Override
-                    public void run() {
-                        try {
-                            int numOfBytes = pipe.syncSubmit("hello".getBytes());
-                            System.out.println(numOfBytes + " bytes sent");
-                        } catch (UsbException e) {
-                            e.printStackTrace();
-                        }
-                    }
-                }, 0, 3, TimeUnit.SECONDS);
-            }
+    private static void onNewAccessoryDevice(UsbDevice device) throws UsbException, UnsupportedEncodingException, ClassNotFoundException, IllegalAccessException, NoSuchFieldException {
+        AccessorySlave newSlave = new AccessorySlave(device);
+        AccessorySlave previousSlave = slaves.put(device, newSlave);
+        if (previousSlave != null) {
+            previousSlave.exit();
+        }
+        newSlave.openCommunication();
+    }
+
+    private static void broadcastHeartBeat() throws UsbException {
+        for (AccessorySlave slave : slaves.values()) {
+            slave.send("heart beat".getBytes());
         }
     }
 }
