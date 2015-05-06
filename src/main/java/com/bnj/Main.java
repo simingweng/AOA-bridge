@@ -34,7 +34,7 @@ public class Main {
                 try {
                     System.out.println(device.getSerialNumberString() + " is in accessory mode");
                     onNewAccessoryDevice(device);
-                } catch (UsbException | UnsupportedEncodingException | RuntimeException | ClassNotFoundException | IllegalAccessException | NoSuchFieldException e) {
+                } catch (UsbException | UnsupportedEncodingException | RuntimeException | ClassNotFoundException | IllegalAccessException | NoSuchFieldException | InterruptedException e) {
                     e.printStackTrace();
                 }
             } else {
@@ -81,7 +81,7 @@ public class Main {
                 } catch (UsbException e) {
                     e.printStackTrace();
                 }
-            }, 0, 5, TimeUnit.SECONDS);
+            }, 0, 3, TimeUnit.SECONDS);
             Thread.sleep(3 * 1000);
             Runtime.getRuntime().addShutdownHook(new Thread(() -> {
                 try {
@@ -126,17 +126,18 @@ public class Main {
         device.syncSubmit(irps);
     }
 
-    private static void onNewAccessoryDevice(UsbDevice device) throws UsbException, UnsupportedEncodingException, ClassNotFoundException, IllegalAccessException, NoSuchFieldException {
+    private static void onNewAccessoryDevice(UsbDevice device) throws UsbException, UnsupportedEncodingException, ClassNotFoundException, IllegalAccessException, NoSuchFieldException, InterruptedException {
         AccessorySlave newSlave = new AccessorySlave(device);
         AccessorySlave previousSlave = slaves.put(device, newSlave);
         if (previousSlave != null) {
             previousSlave.exit();
         }
+        newSlave.openCommunication();
+        Thread.sleep(1000);
         Future<?> previousFuture = rxFutureMap.put(device, dummyRxService.submit(new RxTask(newSlave)));
         if (previousFuture != null) {
             previousFuture.cancel(true);
         }
-        newSlave.openCommunication();
     }
 
     private static void broadcastHeartBeat() throws UsbException {
