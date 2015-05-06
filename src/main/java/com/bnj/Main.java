@@ -17,16 +17,20 @@ import java.util.concurrent.*;
 public class Main {
 
     private static final short[] ACCESSORY_PIDS = {0x2D00, 0x2D01, 0x2D04, 0x2D05};
-    private static ScheduledExecutorService executorService = Executors.newSingleThreadScheduledExecutor();
-    private static ScheduledFuture<?> future;
+    private static ScheduledExecutorService dummyTxService = Executors.newSingleThreadScheduledExecutor();
+    private static ExecutorService dummyRxService = Executors.newCachedThreadPool();
     private static Map<UsbDevice, AccessorySlave> slaves = new ConcurrentHashMap<>();
+    private static Map<UsbDevice, Future<?>> rxFutureMap = new ConcurrentHashMap<>();
 
     private static UsbServicesListener usbServicesListener = new UsbServicesAdapter() {
         @Override
         public void usbDeviceAttached(UsbServicesEvent event) {
             super.usbDeviceAttached(event);
             UsbDevice device = event.getUsbDevice();
-            if (ArrayUtils.contains(ACCESSORY_PIDS, device.getUsbDeviceDescriptor().idProduct())) {
+            short pid = device.getUsbDeviceDescriptor().idProduct();
+            if (pid == 0)
+                return;
+            if (ArrayUtils.contains(ACCESSORY_PIDS, pid)) {
                 try {
                     System.out.println(device.getSerialNumberString() + " is in accessory mode");
                     onNewAccessoryDevice(device);
@@ -58,6 +62,10 @@ public class Main {
                 if (slave != null) {
                     slave.exit();
                 }
+                Future<?> rxFuture = rxFutureMap.remove(event.getUsbDevice());
+                if (rxFuture != null) {
+                    rxFuture.cancel(true);
+                }
             } catch (UsbException | RuntimeException e) {
                 e.printStackTrace();
             }
@@ -67,32 +75,25 @@ public class Main {
     public static void main(String[] args) {
         try {
             UsbHostManager.getUsbServices().addUsbServicesListener(usbServicesListener);
-            future = executorService.scheduleAtFixedRate(new Runnable() {
-                @Override
-                public void run() {
-                    try {
-                        broadcastHeartBeat();
-                    } catch (UsbException e) {
-                        e.printStackTrace();
-                    }
+            dummyTxService.scheduleAtFixedRate(() -> {
+                try {
+                    broadcastHeartBeat();
+                } catch (UsbException e) {
+                    e.printStackTrace();
                 }
-            }, 0, 3, TimeUnit.SECONDS);
+            }, 0, 5, TimeUnit.SECONDS);
             Thread.sleep(3 * 1000);
-            Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    try {
-                        System.out.println("tear down peacefully");
-                        UsbHostManager.getUsbServices().removeUsbServicesListener(usbServicesListener);
-                        if (future != null) {
-                            future.cancel(true);
-                        }
-                        for (AccessorySlave slave : slaves.values()) {
-                            slave.exit();
-                        }
-                    } catch (UsbException e) {
-                        e.printStackTrace();
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                try {
+                    System.out.println("tear down peacefully");
+                    UsbHostManager.getUsbServices().removeUsbServicesListener(usbServicesListener);
+                    dummyTxService.shutdownNow();
+                    dummyRxService.shutdownNow();
+                    for (AccessorySlave slave : slaves.values()) {
+                        slave.exit();
                     }
+                } catch (UsbException e) {
+                    e.printStackTrace();
                 }
             }));
         } catch (UsbException | InterruptedException e) {
@@ -131,12 +132,41 @@ public class Main {
         if (previousSlave != null) {
             previousSlave.exit();
         }
+        Future<?> previousFuture = rxFutureMap.put(device, dummyRxService.submit(new RxTask(newSlave)));
+        if (previousFuture != null) {
+            previousFuture.cancel(true);
+        }
         newSlave.openCommunication();
     }
 
     private static void broadcastHeartBeat() throws UsbException {
         for (AccessorySlave slave : slaves.values()) {
-            slave.send("heart beat".getBytes());
+            slave.send("heart beat from accessory".getBytes());
+        }
+    }
+
+    private static class RxTask implements Runnable {
+
+        private AccessorySlave slave;
+
+        public RxTask(AccessorySlave slave) {
+            this.slave = slave;
+        }
+
+        @Override
+        public void run() {
+            byte[] buffer = new byte[16384];
+            int numOfBytes;
+            System.out.println("start reading from device");
+            while (!Thread.interrupted()) {
+                try {
+                    numOfBytes = slave.receive(buffer);
+                    System.out.println(new String(buffer, 0, numOfBytes));
+                } catch (UsbException e) {
+                    e.printStackTrace();
+                }
+            }
+            System.out.println("Rx task exits");
         }
     }
 }
