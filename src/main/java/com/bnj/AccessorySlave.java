@@ -1,8 +1,10 @@
 package com.bnj;
 
 import javax.usb.*;
+import javax.usb.util.UsbUtil;
 
 /**
+ * A slave device in accessory mode connected to the this accessory
  * Created by simingweng on 27/1/15.
  */
 public class AccessorySlave {
@@ -24,10 +26,10 @@ public class AccessorySlave {
         for (Object obj : iface.getUsbEndpoints()) {
             UsbEndpoint endpoint = (UsbEndpoint) obj;
             if (endpoint.getDirection() == UsbConst.ENDPOINT_DIRECTION_OUT) {
-                outputPipe = endpoint.getUsbPipe();
+                outputPipe = UsbUtil.synchronizedUsbPipe(endpoint.getUsbPipe());
                 outputPipe.open();
             } else {
-                inputPipe = endpoint.getUsbPipe();
+                inputPipe = UsbUtil.synchronizedUsbPipe(endpoint.getUsbPipe());
                 inputPipe.open();
             }
         }

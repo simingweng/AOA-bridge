@@ -133,7 +133,6 @@ public class Main {
             previousSlave.exit();
         }
         newSlave.openCommunication();
-        Thread.sleep(1000);
         Future<?> previousFuture = rxFutureMap.put(device, dummyRxService.submit(new RxTask(newSlave)));
         if (previousFuture != null) {
             previousFuture.cancel(true);
